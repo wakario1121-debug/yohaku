@@ -197,6 +197,7 @@ const blank = () => ({ journal:{}, thoughts:{}, solo:{}, miren:{answers:{}, upda
 let S = blank();
 try { const raw = localStorage.getItem(LS_KEY); if (raw) S = Object.assign(blank(), JSON.parse(raw)); } catch(e){}
 
+normalizeJournal(S);
 let COL = null, SAMPLE = null; // release version: data stays on this device only
 let syncState = "ok";
 function setSync(){
@@ -230,8 +231,8 @@ const countAll = st => Object.keys(st.journal||{}).length + Object.keys(st.thoug
 async function initLocal(){
   await IDB.open();
   const raw = await IDB.get("state");
-  if (raw) { try { const d = Object.assign(blank(), JSON.parse(raw)); if (countAll(d) > countAll(S)) { S = d; saveLocal(); render(); } } catch(e){} }
-  else saveLocal();
+  if (raw) { try { const d = Object.assign(blank(), JSON.parse(raw)); normalizeJournal(d); if (countAll(d) > countAll(S)) { S = d; render(); } } catch(e){} }
+  saveLocal();
   try { if (navigator.storage && navigator.storage.persist) await navigator.storage.persist(); } catch(e){}
   setSync();
 }
@@ -361,7 +362,26 @@ function confirmBox(title, body, okLabel="削除する", danger=true){
 }
 
 /* ============ data helpers ============ */
-const entries = () => Object.entries(S.journal).map(([k,v])=>({date:k,...v})).sort((a,b)=>a.date<b.date?1:-1);
+// journal: S.journal[date] = {entries:[{id,time,at,mood,recall,lonely,...,event,hardest,selfcare,free}], updatedAt}
+function normalizeJournal(st){
+  Object.keys(st.journal||{}).forEach(d=>{ const v = st.journal[d]; if (!v) { delete st.journal[d]; return; }
+    if (!Array.isArray(v.entries)) { const {updatedAt, ...rest} = v; st.journal[d] = {entries:[{...rest, id:uid(), time:"", at:updatedAt||Date.now()}], updatedAt:updatedAt||Date.now()}; }
+    if (!st.journal[d].entries.length) delete st.journal[d]; });
+}
+const sortEnt = a => a.slice().sort((x,y)=> (x.time||"")<(y.time||"") ? -1 : (x.time||"")>(y.time||"") ? 1 : (x.at||0)-(y.at||0));
+const dayEntries = d => S.journal[d] ? sortEnt(S.journal[d].entries) : [];
+function dayAgg(d){
+  const es = dayEntries(d); if (!es.length) return null;
+  const o = {date:d, count:es.length};
+  SCORES.forEach(s=>{ const v = es.map(e=>e[s.k]).filter(x=>x!=null && x!=="").map(Number); o[s.k] = v.length ? Math.round(avg(v)*10)/10 : null; });
+  const withMood = es.filter(e=>e.mood!=null); o.mood = withMood.length ? withMood[withMood.length-1].mood : null;
+  o.recall = es.reduce((t,e)=>t+(+e.recall||0),0);
+  ["event","hardest","selfcare","free"].forEach(k=>{ o[k] = es.map(e=>(e[k]||"").trim()).filter(Boolean).join("\n"); });
+  return o;
+}
+function JA(){ const o = {}; Object.keys(S.journal).forEach(d=>{ const a = dayAgg(d); if (a) o[d] = a; }); return o; }
+const entries = () => Object.values(JA()).sort((a,b)=>a.date<b.date?1:-1);
+const nowHM = () => { const d = new Date(); return pad(d.getHours())+":"+pad(d.getMinutes()); };
 function weekRange(offset=0){ const t = today(); return [addDays(t,-6-7*offset), addDays(t,-7*offset)]; }
 const inRange = (d,[a,b]) => d>=a && d<=b;
 function programInfo(){
@@ -373,7 +393,7 @@ function programInfo(){
 
 /* ============ HOME ============ */
 function vHome(){
-  const t = today(); const E = entries(); const todayE = S.journal[t]; const latest = E[0];
+  const t = today(); const E = entries(); const todayE = dayAgg(t); const latest = E[0];
   const h = new Date().getHours(); const greet = h<5?"夜遅くまでおつかれさま":h<11?"おはようございます":h<18?"こんにちは":"こんばんは";
   const word = WORDS[diffDays("2026-01-01",t) % WORDS.length];
   const pi = programInfo();
@@ -382,13 +402,14 @@ function vHome(){
   // today
   if (todayE) {
     const m = moodOf(todayE.mood);
-    out += `<div class="card"><div class="row between"><h2 style="margin:0">今日の気持ち</h2><button class="link" data-act="editJournal" data-date="${t}">編集</button></div>
-    <div class="row" style="margin:10px 0 14px"><span style="width:14px;height:14px;border-radius:50%;background:${m?m.c:"#ddd"}"></span><span>${m?m.label:"未選択"}</span><span class="muted small">・思い出した回数 ${todayE.recall??0}回</span></div>
-    ${statTiles(todayE)}</div>`;
+    out += `<div class="card"><div class="row between"><h2 style="margin:0">今日の気持ち</h2><button class="link" data-act="go" data-to="journal">${todayE.count}回記録</button></div>
+    <div class="row" style="margin:10px 0 14px"><span style="width:14px;height:14px;border-radius:50%;background:${m?m.c:"#ddd"}"></span><span>${m?m.label:"未選択"}</span><span class="muted small">・思い出した回数 ${todayE.recall}回</span></div>
+    ${statTiles(todayE)}${todayE.count>1?`<p class="small muted" style="margin:8px 0 0">数値は今日の記録の平均です</p>`:""}
+    <button class="btn soft block" style="margin-top:14px" data-act="newEntry">いまの気持ちを書く</button></div>`;
   } else {
-    out += `<div class="card"><h2>今日の気持ち</h2><p class="muted small" style="margin:0 0 14px">まだ記録していません。1分でも大丈夫です。</p>
+    out += `<div class="card"><h2>今日の気持ち</h2><p class="muted small" style="margin:0 0 14px">まだ記録していません。思ったときに、何度でも書けます。</p>
     ${latest ? `<p class="small muted" style="margin:0 0 8px">前回（${jpDate(latest.date)}）</p>${statTiles(latest)}<div style="height:14px"></div>` : ""}
-    <button class="btn block" data-act="go" data-to="journal">今日の気持ちを記録する</button></div>`;
+    <button class="btn block" data-act="newEntry">いまの気持ちを書く</button></div>`;
   }
   // program
   const nextT = pi.next ? PROGRAM[pi.next-1] : null;
@@ -416,7 +437,7 @@ function statTiles(e){
 const SERIES = [["lonely","寂しさ","#2F6FA8"],["attach","未練","#C8743A"],["anxiety","不安","#7A6AAE"]];
 function chartData(){
   const n = UI.chartDays, t = today(); const days = [];
-  for (let i=n-1;i>=0;i--){ const d = addDays(t,-i); days.push({d, e:S.journal[d]}); }
+  for (let i=n-1;i>=0;i--){ const d = addDays(t,-i); days.push({d, e:dayAgg(d)}); }
   return days;
 }
 function chartHTML(){
@@ -465,7 +486,7 @@ function bindChart(){
   hit.addEventListener("pointerleave", ()=>{ tip.style.display="none"; cx.style.display="none"; });
 }
 function trendText(){
-  const E = S.journal; const cur = weekRange(0), prev = weekRange(1);
+  const E = JA(); const cur = weekRange(0), prev = weekRange(1);
   const pick = (rng,k) => Object.entries(E).filter(([d])=>inRange(d,rng)).map(([,e])=>e[k]).filter(v=>v!=null).map(Number);
   const parts = [];
   [["attach","未練"],["lonely","寂しさ"]].forEach(([k,l])=>{
@@ -481,11 +502,11 @@ function trendText(){
 }
 function growthCard(){
   const cur = weekRange(0);
-  const selfCare = Object.entries(S.journal).filter(([d,e])=>inRange(d,cur) && (e.selfcare||"").trim()).length;
+  const selfCare = Object.keys(S.journal).filter(d=>inRange(d,cur)).reduce((t,d)=>t+dayEntries(d).filter(e=>(e.selfcare||"").trim()).length,0);
   const solo = Object.values(S.solo).filter(s=>inRange(s.date,cur)).length;
   const th = Object.values(S.thoughts).filter(s=>inRange(s.date,cur)).length;
   const recDays = Object.keys(S.journal).filter(d=>inRange(d,cur)).length;
-  const lastSelf = Object.entries(S.journal).filter(([,e])=>(e.selfcare||"").trim()).sort((a,b)=>a[0]<b[0]?1:-1)[0];
+  const lastSelf = Object.entries(JA()).filter(([,e])=>(e.selfcare||"").trim()).sort((a,b)=>a[0]<b[0]?1:-1).map(([d,e])=>[d,{selfcare:dayEntries(d).filter(x=>(x.selfcare||"").trim()).pop().selfcare}])[0];
   return `<div class="card"><h2>この1週間の、あなたの歩み</h2>
   <div class="grid2">
     <div class="stat"><div class="k">記録した日</div><div class="n">${recDays}<small> 日</small></div></div>
@@ -498,46 +519,64 @@ function growthCard(){
 
 /* ============ JOURNAL ============ */
 function vJournal(){
-  const date = UI.journalEdit || today();
-  const e = S.journal[date] || {};
-  const f = UI.journalForm && UI.journalForm.date===date ? UI.journalForm : {date, mood:e.mood??null, recall:e.recall??0};
+  const ed = UI.jEdit ? (dayEntries(UI.jEdit.date).find(x=>x.id===UI.jEdit.id) || null) : null;
+  if (UI.jEdit && !ed) UI.jEdit = null;
+  const day = UI.jDay || today();
+  const key = ed ? ed.id : "new";
+  // sliders start from the edited entry, else the latest record, so a quick note doesn't distort the numbers
+  const lastE = (() => { for (const x of entries()) { const es = dayEntries(x.date); if (es.length) return es[es.length-1]; } return {}; })();
+  const base = ed || lastE;
+  const f = UI.journalForm && UI.journalForm.key===key ? UI.journalForm : {key, mood: ed ? ed.mood ?? null : null, recall: ed ? ed.recall ?? 0 : 0};
   UI.journalForm = f;
-  const sl = (k,l) => { const v = e[k] ?? 5; return `<div class="slider"><div class="top"><label class="f" style="margin:14px 0 0" for="r_${k}">${l}</label><span class="v" id="o_${k}">${v}</span></div><input type="range" min="0" max="10" step="1" id="r_${k}" name="${k}" value="${v}" data-out="o_${k}"><div class="scale"><span>0 ない</span><span>10 とても強い</span></div></div>`; };
-  const ta = (k,l,h,ph="") => `<label class="f" for="t_${k}">${l}${h?`<span class="hint">${h}</span>`:""}</label><textarea id="t_${k}" name="${k}" placeholder="${esc(ph)}">${esc(e[k]||"")}</textarea>`;
-  let out = `<h1>今日の気持ち</h1><p class="lead">感じていることを、そのまま置いていく場所です。正しい答えはありません。</p>
+  const sl = (k,l) => { const v = base[k] ?? 5; return `<div class="slider"><div class="top"><label class="f" style="margin:14px 0 0" for="r_${k}">${l}</label><span class="v" id="o_${k}">${v}</span></div><input type="range" min="0" max="10" step="1" id="r_${k}" name="${k}" value="${v}" data-out="o_${k}"><div class="scale"><span>0 ない</span><span>10 とても強い</span></div></div>`; };
+  const ta = (k,l,h) => `<label class="f" for="t_${k}">${l}${h?`<span class="hint">${h}</span>`:""}</label><textarea id="t_${k}" name="${k}">${esc(ed?ed[k]||"":"")}</textarea>`;
+  let out = `<h1>${ed?"記録を編集":"いまの気持ち"}</h1><p class="lead">思ったときに、何度でも。書いたものは1日ごとにまとまります。全部埋めなくて大丈夫です。</p>
   <form class="card" id="jForm" autocomplete="off">
-    <div class="row between"><label class="f" style="margin:0" for="jDate">日付</label>${S.journal[date]?'<span class="tag sage">記録済み・編集中</span>':""}</div>
-    <input type="date" id="jDate" value="${date}" max="${today()}" style="margin-top:6px">
-    <label class="f">今日の気分</label>
+    <div class="grid2"><div><label class="f" style="margin:0 0 6px" for="jDate">日付</label><input type="date" id="jDate" value="${ed?UI.jEdit.date:today()}" max="${today()}"></div>
+    <div><label class="f" style="margin:0 0 6px" for="jTime">時刻</label><input type="time" id="jTime" value="${ed?(ed.time||""):nowHM()}" style="width:100%;background:#fff;border:1px solid var(--line);border-radius:12px;padding:11px 14px;font-size:15px"></div></div>
+    <label class="f">いまの気分</label>
     <div class="mood">${MOODS.map(m=>`<button type="button" class="${f.mood===m.v?"on":""}" data-act="mood" data-v="${m.v}"><span class="dot" style="background:${m.c}"></span>${m.label}</button>`).join("")}</div>
-    <label class="f">元恋人を思い出した回数<span class="hint">だいたいで大丈夫です</span></label>
+    <label class="f">元恋人を思い出した回数<span class="hint">前に記録してから今までの回数。だいたいで大丈夫です</span></label>
     <div class="stepper"><button type="button" data-act="recall" data-d="-1" aria-label="減らす">−</button><span class="n" id="recallN">${f.recall}</span><button type="button" data-act="recall" data-d="1" aria-label="増やす">＋</button><span class="muted small">回</span></div>
     <hr class="sp">
     ${SCORES.map(s=>sl(s.k,s.label)).join("")}
     <hr class="sp">
-    ${ta("event","今日あった出来事","","")}
-    ${ta("hardest","何が一番つらかったか","","")}
-    ${ta("selfcare","今日、自分のためにできたこと","ご飯を食べた、早く寝た、も立派な一つです。","")}
-    ${ta("free","自由記述","書きたいことを、なんでも。","")}
-    <div class="row" style="margin-top:22px"><button class="btn" type="submit" style="flex:1">保存する</button>${S.journal[date]?`<button class="btn danger" type="button" data-act="delJournal" data-date="${date}">削除</button>`:""}</div>
+    ${ta("event","あったこと","")}
+    ${ta("hardest","いちばんつらいこと","")}
+    ${ta("selfcare","自分のためにできたこと","ご飯を食べた、早く寝た、も立派な一つです。")}
+    ${ta("free","自由に","書きたいことを、なんでも。")}
+    <div class="row" style="margin-top:22px"><button class="btn" type="submit" style="flex:1">${ed?"更新する":"記録する"}</button>${ed?`<button class="btn ghost" type="button" data-act="cancelEntry">やめる</button><button class="btn danger" type="button" data-act="delEntry">削除</button>`:""}</div>
   </form>`;
-  const E = entries();
-  out += `<div class="card"><h2>これまでの記録</h2>${E.length ? E.map(x=>{ const m = moodOf(x.mood); return `<div class="list-item" data-act="editJournal" data-date="${x.date}"><div class="d">${shortD(x.date)}</div><div class="b"><div class="row" style="gap:6px;margin-bottom:2px">${m?`<span class="tag">${m.label}</span>`:""}<span class="small muted">寂しさ ${x.lonely??"—"}・未練 ${x.attach??"—"}・不安 ${x.anxiety??"—"}</span></div><div class="t">${esc(x.hardest||x.event||x.free||"")}</div></div></div>`; }).join("") : `<p class="muted small">まだ記録はありません。</p>`}</div>`;
+  // the selected day's timeline
+  const des = dayEntries(day), ag = dayAgg(day);
+  out += `<div class="card" id="dayCard"><div class="row between"><h2 style="margin:0">${day===today()?"今日":jpDate(day)}の記録</h2>${ag?`<span class="small muted">${ag.count}回</span>`:""}</div>
+  ${ag ? `<p class="small muted" style="margin:6px 0 4px">平均　寂しさ ${r1(ag.lonely)}・未練 ${r1(ag.attach)}・不安 ${r1(ag.anxiety)}・思い出した ${ag.recall}回</p>` : `<p class="small muted">まだ記録はありません。</p>`}
+  ${des.map(x=>{ const m = moodOf(x.mood); const txt = [x.event,x.hardest,x.selfcare,x.free].filter(Boolean).join(" / ");
+    return `<div class="list-item" data-act="editEntry" data-date="${day}" data-id="${x.id}"><div class="d">${x.time||"—"}</div><div class="b"><div class="row" style="gap:6px;margin-bottom:2px">${m?`<span class="tag">${m.label}</span>`:""}<span class="small muted">寂しさ ${x.lonely??"—"}・未練 ${x.attach??"—"}・不安 ${x.anxiety??"—"}</span></div>${txt?`<div class="t">${esc(txt)}</div>`:""}</div></div>`; }).join("")}
+  ${day!==today()?`<button class="link" style="margin-top:10px" data-act="jDay" data-date="${today()}">今日の記録に戻る</button>`:""}</div>`;
+  if (!ed && des.length) { // show the day's timeline above the form when just adding
+    const i = out.indexOf('<form class="card" id="jForm"'), j = out.indexOf('<div class="card" id="dayCard">');
+    out = out.slice(0,i) + out.slice(j) + out.slice(i,j);
+  }
+  const E = entries().filter(x=>x.date!==day);
+  if (E.length) out += `<div class="card"><h2>これまでの記録</h2>${E.map(x=>{ const m = moodOf(x.mood); return `<div class="list-item" data-act="jDay" data-date="${x.date}"><div class="d">${shortD(x.date)}</div><div class="b"><div class="row" style="gap:6px;margin-bottom:2px">${m?`<span class="tag">${m.label}</span>`:""}<span class="small muted">${x.count}回・寂しさ ${r1(x.lonely)}・未練 ${r1(x.attach)}・不安 ${r1(x.anxiety)}</span></div><div class="t">${esc((x.hardest||x.event||x.free||"").split("\n")[0])}</div></div></div>`; }).join("")}</div>`;
   return out;
 }
-document.addEventListener("change", e => {
-  if (e.target.id==="jDate") { UI.journalEdit = e.target.value || today(); UI.journalForm = null; render(); }
-});
 document.addEventListener("submit", e => {
   e.preventDefault();
   if (e.target.id==="jForm") {
-    const fd = new FormData(e.target); const date = $("#jDate").value || today();
-    const rec = Object.assign({}, S.journal[date]||{}, {mood:UI.journalForm.mood, recall:UI.journalForm.recall});
+    const fd = new FormData(e.target); const date = $("#jDate").value || today(); const time = $("#jTime").value || "";
+    const old = UI.jEdit; const prev = old ? dayEntries(old.date).find(x=>x.id===old.id) : null;
+    const rec = {id: prev ? prev.id : uid(), at: prev ? prev.at : Date.now(), time, mood:UI.journalForm.mood, recall:UI.journalForm.recall};
     SCORES.forEach(s=>rec[s.k] = +fd.get(s.k));
     ["event","hardest","selfcare","free"].forEach(k=>rec[k] = (fd.get(k)||"").trim());
-    S.journal[date] = rec; persist("journal", date);
+    if (old) { // remove from the old day (the date may have changed)
+      const od = S.journal[old.date]; if (od) { od.entries = od.entries.filter(x=>x.id!==old.id); if (!od.entries.length) delete S.journal[old.date]; }
+    }
+    if (!S.journal[date]) S.journal[date] = {entries:[], updatedAt:0};
+    S.journal[date].entries.push(rec); persist("journal", date);
     if (S.program.start && !S.program.done[1] && date===today()) { S.program.done[1] = true; persist("program"); }
-    toast("保存しました"); UI.journalEdit = null; UI.journalForm = null; go("home");
+    toast(old ? "更新しました" : "記録しました"); UI.jEdit = null; UI.journalForm = null; UI.jDay = date; render(); window.scrollTo(0,0);
   }
 });
 
@@ -718,7 +757,7 @@ const PATTERNS = [
 ];
 function allTexts(){
   const out = [];
-  Object.entries(S.journal).forEach(([d,e])=>["event","hardest","free"].forEach(k=>{ if (e[k]) out.push({src:"記録 "+shortD(d), text:e[k]}); }));
+  Object.keys(S.journal).forEach(d=>dayEntries(d).forEach(e=>["event","hardest","free"].forEach(k=>{ if (e[k]) out.push({src:"記録 "+shortD(d)+(e.time?" "+e.time:""), text:e[k]}); })));
   Object.values(S.thoughts).forEach(t=>out.push({src:"考えの整理 "+shortD(t.date), text:t.raw}));
   Object.entries(S.miren.answers||{}).forEach(([k,v])=>{ if (v) out.push({src:"未練の整理", text:v}); });
   REV.forEach(([k])=>{ if (S.review[k]) out.push({src:"振り返り", text:S.review[k]}); });
@@ -726,7 +765,7 @@ function allTexts(){
 }
 function patternScores(){
   const T = allTexts(); const sr = S.meta.selfRate || {};
-  const E = Object.values(S.journal);
+  const E = Object.values(JA());
   const thoughtsN = Object.keys(S.thoughts).length;
   const res = PATTERNS.map(p=>{
     const hits = [];
@@ -861,7 +900,7 @@ document.addEventListener("change", e => { if (e.target.id==="chatCtx") UI.chatC
 
 /* ============ DATA ============ */
 function vData(){
-  const counts = `記録 ${Object.keys(S.journal).length}日分・考えの整理 ${Object.keys(S.thoughts).length}件・一人の時間 ${Object.keys(S.solo).length}件`;
+  const counts = `記録 ${Object.keys(S.journal).length}日分（${Object.values(S.journal).reduce((t,v)=>t+v.entries.length,0)}件）・考えの整理 ${Object.keys(S.thoughts).length}件・一人の時間 ${Object.keys(S.solo).length}件`;
   const lb = S.meta.lastBackup;
   return `${backLink()}<h1>データとプライバシー</h1>
   <div class="card"><h2>保存のしくみ</h2>
@@ -880,10 +919,10 @@ function vData(){
   <p class="small" style="margin:0">よりそいホットライン（24時間・無料）<br><b>0120-279-338</b></p><p class="small" style="margin:10px 0 0">いのちの電話（ナビダイヤル）<br><b>0570-783-556</b></p>
   <p class="small muted" style="margin:10px 0 0">このアプリは医療やカウンセリングの代わりではありません。</p></div>
   <div class="card"><h2>すべてのデータを削除</h2><p class="small muted">記録・整理・メモをすべて消去します。元に戻せません。</p><button class="btn danger" data-act="wipe">すべて削除する</button></div>
-  <p class="small muted" style="text-align:center">余白 v1.0</p>`;
+  <p class="small muted" style="text-align:center">余白 v1.1</p>`;
 }
 function mergeData(d){
-  let n = 0;
+  let n = 0; d = Object.assign(blank(), d); normalizeJournal(d);
   ["journal","thoughts","solo"].forEach(k=>Object.entries(d[k]||{}).forEach(([key,v])=>{ if (v && (!S[k][key] || (v.updatedAt||0)>(S[k][key].updatedAt||0))) { S[k][key]=v; n++; } }));
   ["miren","review","program","chat","meta"].forEach(k=>{ if (d[k] && (d[k].updatedAt||0)>(S[k].updatedAt||0)) { const keep = S.meta.lastBackup; S[k]=Object.assign(blank()[k], d[k]); if (k==="meta" && keep) S.meta.lastBackup = keep; n++; } });
   saveLocal(); return n;
@@ -899,14 +938,17 @@ document.addEventListener("click", async e => {
   const el = e.target.closest("[data-act]"); if (!el) return;
   const a = el.dataset.act;
   const A = {
-    go: () => { e.preventDefault(); if (el.dataset.to==="journal") { UI.journalEdit=null; UI.journalForm=null; } go(el.dataset.to); },
+    go: () => { e.preventDefault(); if (el.dataset.to==="journal") { UI.jEdit=null; UI.journalForm=null; UI.jDay=null; } go(el.dataset.to); },
+    newEntry: () => { UI.jEdit=null; UI.journalForm=null; UI.jDay=null; go("journal"); },
+    editEntry: () => { UI.jEdit = {date:el.dataset.date, id:el.dataset.id}; UI.journalForm = null; render(); window.scrollTo(0,0); },
+    cancelEntry: () => { UI.jEdit = null; UI.journalForm = null; render(); },
+    jDay: () => { UI.jDay = el.dataset.date; render(); const c = $("#dayCard"); if (c) c.scrollIntoView({behavior:"smooth", block:"start"}); },
+    delEntry: async () => { const o = UI.jEdit; if (!o) return; if (await confirmBox("この記録を削除しますか？","元に戻せません。")) { const d = S.journal[o.date]; if (d) { d.entries = d.entries.filter(x=>x.id!==o.id); if (d.entries.length) persist("journal", o.date); else removeItem("journal", o.date); } UI.jEdit=null; UI.journalForm=null; toast("削除しました"); render(); } },
     chartDays: () => { UI.chartDays = +el.dataset.n; render(); },
     chartTable: () => { UI.chartTable = !UI.chartTable; render(); },
     startProgram: () => { S.program.start = today(); persist("program"); go("program"); },
-    editJournal: () => { UI.journalEdit = el.dataset.date; UI.journalForm = null; go("journal"); },
     mood: () => { UI.journalForm.mood = +el.dataset.v; document.querySelectorAll(".mood button").forEach(b=>b.classList.toggle("on", +b.dataset.v===UI.journalForm.mood)); },
     recall: () => { UI.journalForm.recall = Math.max(0, UI.journalForm.recall + +el.dataset.d); $("#recallN").textContent = UI.journalForm.recall; },
-    delJournal: async () => { if (await confirmBox("この日の記録を削除しますか？", esc(jpDate(el.dataset.date))+"の記録を削除します。元に戻せません。")) { removeItem("journal", el.dataset.date); UI.journalEdit=null; UI.journalForm=null; toast("削除しました"); render(); } },
     mirenNav: () => { saveMirenTa(); UI.mirenStep = Math.max(0, Math.min(MIREN.length-1, UI.mirenStep + +el.dataset.d)); render(); window.scrollTo(0,0); },
     mirenJump: () => { saveMirenTa(); UI.mirenStep = +el.dataset.i; render(); },
     mirenDone: () => { saveMirenTa(); UI.mirenSummary = true; toast("保存しました"); render(); window.scrollTo(0,0); },

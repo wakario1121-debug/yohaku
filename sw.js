@@ -1,5 +1,5 @@
 // 余白：ネットがなくても使えるようにするサービスワーカー
-const CACHE="yohaku-72dff922c9";
+const CACHE="yohaku-dacbf6323e";
 const FILES=["./","index.html","manifest.webmanifest","icons/apple-touch-icon.png","icons/icon-192.png","icons/icon-512.png","icons/maskable-512.png"];
 self.addEventListener("install",e=>{ e.waitUntil(caches.open(CACHE).then(c=>c.addAll(FILES)).then(()=>self.skipWaiting())); });
 self.addEventListener("activate",e=>{ e.waitUntil(caches.keys().then(ks=>Promise.all(ks.filter(k=>k!==CACHE&&k.startsWith("yohaku-")&&k!=="yohaku-fonts").map(k=>caches.delete(k)))).then(()=>self.clients.claim())); });
